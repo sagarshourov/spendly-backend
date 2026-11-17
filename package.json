@@ -1,14 +1,16 @@
 {
   "name": "spendly-receipt-ocr",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "start": "node scripts/local-server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "check": "node --check src/ocr.mjs && node --check src/http.mjs && node --check api/receipts/extract.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "dependencies": {
     "@tesseract.js-data/ben": "^1.0.0",

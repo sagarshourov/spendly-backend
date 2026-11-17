@@ -11,7 +11,7 @@ test(
   { timeout: 90000 },
   async () => {
     const port = 19000 + Math.floor(Math.random() * 10000);
-    const child = spawn(process.execPath, ["src/server.mjs"], {
+    const child = spawn(process.execPath, ["scripts/local-server.mjs"], {
       cwd: fileURLToPath(new URL("../", import.meta.url)),
       env: { ...process.env, PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
@@ -40,6 +40,12 @@ test(
       });
       const health = await fetch(`http://127.0.0.1:${port}/health`);
       assert.equal(health.status, 200);
+      for (const pathname of ['/', '/privacy-policy', '/privacy-policy.html']) {
+        const page = await fetch(`http://127.0.0.1:${port}${pathname}`);
+        assert.equal(page.status, 200);
+        assert.match(page.headers.get('content-type'), /text\/html/);
+        assert.match(await page.text(), /Spendly AI/);
+      }
       const svg =
         '<svg width="900" height="600" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="white"/><g font-family="DejaVu Sans" fill="black" font-size="40"><text x="80" y="100">FRESH MARKET</text><text x="80" y="220">Rice 85.00</text><text x="80" y="300">Milk 100.00</text><text x="80" y="420">TOTAL BDT 185.00</text></g></svg>';
       const image = await sharp(Buffer.from(svg)).png().toBuffer();

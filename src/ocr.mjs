@@ -2,12 +2,16 @@ import { createWorker } from "tesseract.js";
 import sharp from "sharp";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { mkdir, copyFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { mkdir, copyFile, rename, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import process from "node:process";
+import { tmpdir } from "node:os";
+import { MAX_IMAGE_BASE64 } from "./limits.mjs";
 import { parseReceipt } from "./parser.mjs";
 
 const require = createRequire(import.meta.url);
-const dataDirectory = fileURLToPath(new URL("../.tessdata/", import.meta.url));
+const dataDirectory = path.join(tmpdir(), "spendly-ocr-models-v1");
+let initialization;
 let worker;
 let busy = false;
 export class ReceiptError extends Error {
@@ -16,20 +20,19 @@ export class ReceiptError extends Error {
     this.status = status;
   }
 }
-export async function prepareOcr() {
+async function initializeWorker() {
   await mkdir(dataDirectory, { recursive: true });
   for (const language of ["eng", "ben"]) {
     const packageDirectory = path.dirname(
       require.resolve(`@tesseract.js-data/${language}/package.json`),
     );
-    await copyFile(
-      path.join(
-        packageDirectory,
-        "4.0.0_best_int",
-        `${language}.traineddata.gz`,
-      ),
-      path.join(dataDirectory, `${language}.traineddata.gz`),
-    );
+    const destination = path.join(dataDirectory, `${language}.traineddata.gz`);
+    const exists = await stat(destination).then(file => file.size > 0).catch(() => false);
+    if (!exists) {
+      const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+      await copyFile(path.join(packageDirectory, '4.0.0_best_int', `${language}.traineddata.gz`), temporary);
+      await rename(temporary, destination);
+    }
   }
   worker = await createWorker(["eng", "ben"], 1, {
     langPath: dataDirectory,
@@ -39,28 +42,32 @@ export async function prepareOcr() {
     errorHandler: () => {},
   });
 }
+export async function prepareOcr() {
+  if (worker) return worker;
+  if (!initialization) {
+    initialization = initializeWorker().catch((error) => { initialization = undefined; throw error; });
+  }
+  await initialization;
+  return worker;
+}
 export async function extractReceipt(base64, options = {}) {
   if (busy)
     throw new ReceiptError("Scanner is busy. Please try again shortly.", 429);
-  if (!worker)
-    throw new ReceiptError(
-      "Scanner is starting. Please try again shortly.",
-      503,
-    );
   if (
     typeof base64 !== "string" ||
     base64.length < 16 ||
-    base64.length > 11_000_000 ||
+    base64.length > MAX_IMAGE_BASE64 ||
     !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)
   ) {
     throw new ReceiptError(
-      "Select a valid receipt image smaller than 8 MB.",
+      "Select a valid receipt image smaller than 2.4 MB.",
       400,
     );
   }
   busy = true;
   let timer;
   try {
+    await prepareOcr();
     let image;
     try {
       image = await sharp(Buffer.from(base64, "base64"), {
@@ -108,15 +115,18 @@ export async function extractReceipt(base64, options = {}) {
       const expired = worker;
       worker = null;
       await expired.terminate();
-      await prepareOcr();
+      initialization = undefined;
     }
     throw error;
   } finally {
     clearTimeout(timer);
-    busy = false;
+    // Release receipt-related worker memory after each request.
+    try { await closeOcr(); } finally { busy = false; }
   }
 }
 export async function closeOcr() {
-  if (worker) await worker.terminate();
+  const previous = worker;
   worker = null;
+  initialization = undefined;
+  if (previous) await previous.terminate();
 }
